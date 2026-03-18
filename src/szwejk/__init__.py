@@ -1,0 +1,2 @@
+"""Szwejk project package."""
+

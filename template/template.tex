@@ -1,0 +1,165 @@
+% ============================================
+% Hybrid Polish–Czech Novel Template
+% Clean template with placeholders only
+% Page size: 129mm × 198mm
+% ============================================
+
+\documentclass[11pt,oneside,openany]{memoir}
+
+% ---------- Engine / language ----------
+\usepackage{fontspec}
+\usepackage{polyglossia}
+\setmainlanguage{polish}
+\setotherlanguage{czech}
+
+% ---------- Typography ----------
+\usepackage{graphicx}
+\usepackage{multicol}
+\usepackage[perpage,stable,bottom]{footmisc}
+\usepackage{microtype}
+\usepackage{xcolor}
+
+% ---------- Page size ----------
+% Final trimmed page: 129 × 198 mm
+\setstocksize{198mm}{129mm}
+\settrimmedsize{198mm}{129mm}{*}
+
+% Text block width = 129 − 20 − 15 = 94 mm
+\settypeblocksize{*}{94mm}{*}
+\setlrmarginsandblock{20mm}{15mm}{*}
+\setulmarginsandblock{18mm}{25mm}{*}
+\setheadfoot{16pt}{18pt}
+\checkandfixthelayout
+
+% ---------- Page style ----------
+\pagestyle{plain}
+
+% ---------- Fonts ----------
+% Safe fallback fonts available in TeX Live
+\setmainfont{TeX Gyre Pagella}
+\newfontfamily\czfont{TeX Gyre Heros}[Scale=MatchLowercase]
+
+% If you later add local fonts, replace the above with for example:
+% \setmainfont{Literata-Regular.ttf}[
+%   Path=assets/fonts/,
+%   UprightFont=*,
+%   BoldFont=Literata-Bold.ttf,
+%   ItalicFont=Literata-Italic.ttf,
+%   BoldItalicFont=Literata-BoldItalic.ttf,
+%   Ligatures=TeX
+% ]
+%
+% \newfontfamily\czfont{Inter-Regular.ttf}[
+%   Path=assets/fonts/,
+%   UprightFont=*,
+%   BoldFont=Inter-Bold.ttf,
+%   ItalicFont=Inter-Italic.ttf,
+%   BoldItalicFont=Inter-BoldItalic.ttf,
+%   Scale=MatchLowercase,
+%   Ligatures=TeX
+% ]
+
+% ---------- Paragraph rhythm ----------
+\setlength{\parindent}{1.2em}
+\setlength{\parskip}{0pt}
+\linespread{1.16}\selectfont
+\emergencystretch=1.5em
+\clubpenalty=10000
+\widowpenalty=10000
+\displaywidowpenalty=10000
+
+% ---------- Footnotes ----------
+\setlength{\footmarkwidth}{1.8em}
+\setlength{\footmarksep}{0.3em}
+\footnotesep=0.7\baselineskip
+
+% ---------- Chapter style ----------
+\chapterstyle{section}
+
+\renewcommand{\chapnamefont}{\normalfont\small\scshape\centering}
+\renewcommand{\chapnumfont}{\normalfont\Large\bfseries\centering}
+\renewcommand{\chaptitlefont}{\normalfont\huge\bfseries\centering}
+\renewcommand{\printchaptername}{\chapnamefont \chaptername}
+\renewcommand{\printchapternum}{\par\chapnumfont \thechapter\par}
+\renewcommand{\afterchapternum}{\vskip 0.8\baselineskip}
+\renewcommand{\printchaptertitle}[1]{\chaptitlefont #1\par}
+\renewcommand{\afterchaptertitle}{\vskip 1.5\baselineskip}
+
+\setbeforesecskip{1.2\baselineskip}
+\setaftersecskip{0.6\baselineskip}
+\setsecnumdepth{chapter}
+\settocdepth{chapter}
+
+% ---------- Czech inline style ----------
+% Variant 3: smaller + slightly letterspaced + dark gray
+\newcommand{\cztext}[1]{{%
+  \czfont
+  \fontsize{10.45pt}{14.2pt}\selectfont
+  \color[HTML]{3A3A3A}%
+  \addfontfeatures{LetterSpace=4}%
+  #1%
+}}
+
+% Safe fallback if LetterSpace causes trouble:
+% \newcommand{\cztext}[1]{{%
+%   \czfont
+%   \fontsize{10.45pt}{14.2pt}\selectfont
+%   \color[HTML]{3A3A3A}%
+%   #1%
+% }}
+
+% First occurrence + footnote
+\newcommand{\cznote}[2]{\textbf{\cztext{#1}}\footnote{#2}}
+
+% First occurrence without footnote
+\newcommand{\cznew}[1]{\textbf{\cztext{#1}}}
+
+% Repeated occurrence
+\newcommand{\czplain}[1]{\cztext{#1}}
+
+% ---------- Scene break ----------
+\newcommand{\scenebreak}{%
+  \par\vspace{0.9\baselineskip}%
+  \begin{center}* * *\end{center}%
+  \vspace{0.7\baselineskip}%
+}
+
+% ============================================
+% DOCUMENT
+% ============================================
+
+\begin{document}
+
+% ---------- FRONT MATTER ----------
+\frontmatter
+
+\thispagestyle{empty}
+\vspace*{\fill}
+\begin{center}
+{\Huge\bfseries %%BOOK_TITLE%%\par}
+\vspace{1.5cm}
+{\Large %%BOOK_AUTHOR%%\par}
+\vspace{1cm}
+{\large %%BOOK_SUBTITLE%%\par}
+\end{center}
+\vspace*{\fill}
+\clearpage
+
+\tableofcontents*
+\clearpage
+
+% ---------- MAIN MATTER ----------
+\mainmatter
+
+%%BOOK_CONTENT%%
+
+% ---------- BACK MATTER ----------
+\backmatter
+
+\chapter{Słownik czesko-polski}
+
+%%GLOSSARY_CONTENT%%
+
+%%META_CONTENT%%
+
+\end{document}

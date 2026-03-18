@@ -1,0 +1,17 @@
+.planning/
+.axon/
+deliverables/
+audit-logs/
+.idea/
+output/
+__pycache__/
+.pytest_cache/
+*.pyc
+*.pyo
+*.aux
+*.fdb_latexmk
+*.fls
+*.log
+*.toc
+/book.pdf
+/manuscript.pdf

@@ -1,0 +1,41 @@
+{
+  "metadata": {
+    "id": "book-pl-przygody-dobrego-wojaka-szwejka",
+    "language": "pl",
+    "title": "Przygody dobrego wojaka Szwejka",
+    "source_path": "raw_texts/pl/Przygody_dobrego_wojaka_Szwejka.epub"
+  },
+  "chapters": [
+    {
+      "id": "book-pl-przygody-dobrego-wojaka-szwejka-ch-001-rozdzial-i",
+      "index": 1,
+      "title": "Rozdzial I",
+      "label": "Rozdzial I",
+      "source_path": "OPS/c3_Przygody_dobrego_wojaka_Szwejka_Tom_I_I.xhtml",
+      "paragraphs": [
+        {
+          "id": "book-pl-przygody-dobrego-wojaka-szwejka-ch-001-rozdzial-i-p-0001",
+          "index": 1,
+          "text": "-- A to nam zabili Ferdynanda -- rzekla poslugaczka do pana Szwejka.",
+          "kind": "paragraph",
+          "sentences": [
+            {
+              "id": "book-pl-przygody-dobrego-wojaka-szwejka-ch-001-rozdzial-i-p-0001-s-001",
+              "index": 1,
+              "text": "-- A to nam zabili Ferdynanda -- rzekla poslugaczka do pana Szwejka."
+            }
+          ],
+          "source_fragments": [
+            {
+              "source_path": "OPS/c3_Przygody_dobrego_wojaka_Szwejka_Tom_I_I.xhtml",
+              "element_tag": "p",
+              "ordinal": 0,
+              "text_offset_start": 0,
+              "text_offset_end": 67
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

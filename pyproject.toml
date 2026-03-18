@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "szwejk"
+version = "0.1.0"
+description = "Alignment-first editorial pipeline for a Polish-Czech hybrid Szwejk edition."
+readme = "START_HERE.md"
+requires-python = ">=3.12"
+authors = [
+  { name = "Codex" }
+]
+dependencies = []
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
