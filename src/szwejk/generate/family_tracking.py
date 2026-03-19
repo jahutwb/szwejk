@@ -17,6 +17,19 @@ def _text_similarity_local(left: str, right: str) -> float:
     return SequenceMatcher(a=left.strip().lower(), b=right.strip().lower()).ratio()
 
 
+def _covered_target_lemmas(candidate: ParagraphHybridCandidate) -> set[str]:
+    """Target lemmas covered by this candidate (derived from family_id right side of '::')."""
+    covered: set[str] = set()
+    for family_id in _cost_family_ids(candidate):
+        if "::" not in family_id:
+            continue
+        _source, target = family_id.split("::", 1)
+        target = target.strip().lower()
+        if target:
+            covered.add(target)
+    return covered
+
+
 def _cost_family_ids(candidate: ParagraphHybridCandidate) -> list[str]:
     content = [str(item) for item in candidate.metadata.get("content_family_ids", []) if str(item).strip()]
     if content:
