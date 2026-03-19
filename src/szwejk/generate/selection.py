@@ -156,6 +156,7 @@ def _select_candidates_three_phase(
     target_cumulative_after: float,
     progress: float,
     wiktionary_lookup: dict[str, list[str]] | None = None,
+    pl_to_cs_lookup: dict[str, list[str]] | None = None,
 ) -> list[ParagraphHybridCandidate]:
     """Three-phase candidate selector for the cumulative-simple policy.
 
@@ -192,7 +193,7 @@ def _select_candidates_three_phase(
         if _familiarity_ratio(c, local_fam, local_src) >= GRATIS_FAMILIARITY_THRESHOLD
         and _candidate_allowed_as_surface_carrier(c)
     ]
-    _aq = lambda c: alignment_quality_score(c, wiktionary_lookup)  # noqa: E731
+    _aq = lambda c: alignment_quality_score(c, wiktionary_lookup, pl_to_cs_lookup)  # noqa: E731
     gratis_pool.sort(key=lambda c: (
         -float(_target_span_word_count(c)),
         -_aq(c),

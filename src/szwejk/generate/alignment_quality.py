@@ -92,32 +92,43 @@ def _cs_lemmas_from_family_ids(candidate: ParagraphHybridCandidate) -> list[str]
 
 def _token_dict_hit(
     candidate: ParagraphHybridCandidate,
-    wiktionary_lookup: dict[str, list[str]] | None,
+    cs_to_pl: dict[str, list[str]] | None,
+    pl_to_cs: dict[str, list[str]] | None = None,
 ) -> float:
-    """Dictionary validation score for a token candidate.
+    """Bidirectional dictionary validation score for a token candidate.
 
-    Looks up each CS lemma (right side of '::' in family_ids) → expected PL
-    lemmas, checks fraction of source (PL) lemmas confirmed.
-    Returns 0.0 when no dictionary entry exists — absence ≠ wrong alignment.
+    Checks both directions:
+      CS→PL: cs_to_pl[cs_lemma] contains pl_lemma?
+      PL→CS: pl_to_cs[pl_lemma] contains cs_lemma?
+    A hit in either direction counts as confirmation.
+    Returns 0.0 only when NEITHER dictionary has any entry for the pair
+    (absence ≠ wrong alignment — unknown word, not contradiction).
     """
-    if not wiktionary_lookup:
+    if not cs_to_pl and not pl_to_cs:
         return 0.0
     pl_lemmas = _source_lemmas_of_candidate(candidate)
     cs_lemmas = _cs_lemmas_from_family_ids(candidate)
     if not pl_lemmas or not cs_lemmas:
         return 0.0
+
     hits: list[float] = []
     for cs in cs_lemmas:
-        translations = wiktionary_lookup.get(cs)
-        if translations:
-            hit = len(pl_lemmas & set(translations)) / len(pl_lemmas)
-            hits.append(hit)
+        for pl in pl_lemmas:
+            forward = cs_to_pl.get(cs, []) if cs_to_pl else []
+            backward = pl_to_cs.get(pl, []) if pl_to_cs else []
+            if pl in forward or cs in backward:
+                hits.append(1.0)
+            elif forward or backward:
+                # At least one direction has entries but neither confirms → 0
+                hits.append(0.0)
+            # else: neither dict has entries → no signal, don't penalise
     return sum(hits) / len(hits) if hits else 0.0
 
 
 def alignment_quality_score(
     candidate: ParagraphHybridCandidate,
     wiktionary_lookup: dict[str, list[str]] | None = None,
+    pl_to_cs_lookup: dict[str, list[str]] | None = None,
 ) -> float:
     """Returns [0, 1] — how reliable is this alignment?
 
@@ -141,7 +152,7 @@ def alignment_quality_score(
 
     if candidate.granularity == "token":
         form = char_trigram_jaccard(candidate.source_text, candidate.target_text)
-        dict_hit = _token_dict_hit(candidate, wiktionary_lookup)
+        dict_hit = _token_dict_hit(candidate, wiktionary_lookup, pl_to_cs_lookup)
         if dict_hit > 0.0:
             # Dictionary confirms the translation — trust it heavily
             return min(1.0, 0.55 * dict_hit + 0.25 * form + 0.15 * upos + 0.05 * deprel)
@@ -233,11 +244,21 @@ def linguistic_similarity_score(
 # Dictionary I/O
 # ---------------------------------------------------------------------------
 
-def build_wiktionary_lookup(path: Path | str) -> dict[str, list[str]]:
-    """Load the pre-built CS→PL JSON lookup from disk."""
+def build_wiktionary_lookup(
+    path: Path | str,
+) -> tuple[dict[str, list[str]], dict[str, list[str]]]:
+    """Load the pre-built CS→PL lookup and derive the reverse PL→CS index.
+
+    Returns (cs_to_pl, pl_to_cs) — both empty dicts if the file does not exist.
+    """
     p = Path(path)
     if not p.exists():
-        return {}
+        return {}, {}
     with p.open(encoding="utf-8") as fh:
-        return json.load(fh)
+        cs_to_pl: dict[str, list[str]] = json.load(fh)
+    pl_to_cs: dict[str, list[str]] = {}
+    for cs, pls in cs_to_pl.items():
+        for pl in pls:
+            pl_to_cs.setdefault(pl, []).append(cs)
+    return cs_to_pl, pl_to_cs
 

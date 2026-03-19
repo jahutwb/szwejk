@@ -117,6 +117,7 @@ def build_paragraph_hybridization_plan(
     chapter_simple_boost_start: float = 0.55,
     lemma_schedule_payload: dict[str, object] | None = None,
     wiktionary_lookup: dict[str, list[str]] | None = None,
+    pl_to_cs_lookup: dict[str, list[str]] | None = None,
 ) -> dict[str, object]:
     units = _build_units(alignment_artifact, blocked_standalone_upos=blocked_standalone_upos)
     family_weight_lookup = _build_family_weight_lookup(units)
@@ -186,6 +187,7 @@ def build_paragraph_hybridization_plan(
                 target_cumulative_after=cumulative_target_after,
                 progress=progress,
                 wiktionary_lookup=wiktionary_lookup,
+                pl_to_cs_lookup=pl_to_cs_lookup,
             )
             selected_candidates = _promote_large_carriers(
                 selected_candidates=selected_candidates,

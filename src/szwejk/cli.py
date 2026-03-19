@@ -305,6 +305,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--lemma-schedule",
         help="Optional lemma-schedule JSON used as a global introduction-order prior for candidate ranking.",
     )
+    paragraph_hybrid_parser.add_argument(
+        "--wiktionary",
+        default="data/reference/wiktionary_cs_pl.json",
+        help="CS→PL dictionary JSON for bidirectional token alignment quality scoring "
+             "(default: data/reference/wiktionary_cs_pl.json).",
+    )
     paragraph_hybrid_parser.add_argument("--output", required=True, help="Output JSON path.")
 
     czechness_parser = subparsers.add_parser(
@@ -884,6 +890,8 @@ def main() -> int:
             for item in str(args.blocked_standalone_upos).split(",")
             if item.strip()
         )
+        from szwejk.generate.alignment_quality import build_wiktionary_lookup
+        cs_to_pl, pl_to_cs = build_wiktionary_lookup(getattr(args, "wiktionary", None) or "")
         payload = build_paragraph_hybridization_plan(
             artifact,
             target_power=args.target_power,
@@ -894,6 +902,8 @@ def main() -> int:
             chapter_simple_target_max=args.chapter_simple_target_max,
             chapter_simple_boost_start=args.chapter_simple_boost_start,
             lemma_schedule_payload=None if not args.lemma_schedule else json.loads(Path(args.lemma_schedule).read_text(encoding="utf-8")),
+            wiktionary_lookup=cs_to_pl or None,
+            pl_to_cs_lookup=pl_to_cs or None,
         )
         output_path = Path(args.output)
         output_path.parent.mkdir(parents=True, exist_ok=True)
