@@ -3,63 +3,53 @@
 from __future__ import annotations
 
 from collections import Counter, defaultdict
-from dataclasses import dataclass
 from difflib import SequenceMatcher
 from pathlib import Path
 import json
 
-FALLBACK_RELATIONS = {"embedding_assisted", "dictionary", "manual_forced"}
-TOKEN_CONFIDENCE_PENALTY = 0.025
-STRUCTURAL_CONFIDENCE_PENALTY = 0.008
-FUNCTIONAL_UPOS = frozenset({"SCONJ", "CCONJ", "PART", "ADP", "PRON", "DET", "AUX"})
-DEFAULT_BLOCKED_STANDALONE_UPOS = FUNCTIONAL_UPOS
-FALLBACK_STOPWORDS = {
-    "pl": {"a", "ale", "bo", "by", "co", "czy", "do", "go", "i", "ich", "jego", "jej", "jak", "już", "na", "nie", "o", "od", "po", "przed", "przy", "się", "swoim", "ten", "to", "w", "za", "z", "że"},
-    "cs": {"a", "ale", "bo", "by", "co", "do", "ho", "i", "jak", "je", "jeho", "její", "již", "na", "ne", "o", "od", "po", "před", "pri", "se", "svým", "ten", "to", "u", "už", "v", "za", "z", "že"},
-}
-SURFACE_FUNCTION_WORDS = FALLBACK_STOPWORDS["pl"] | FALLBACK_STOPWORDS["cs"] | {
-    "mu", "mi", "mnie", "mně", "tě", "ci", "pana", "pan", "pani", "ją", "jąż", "go", "ho", "me", "mě", "jsem", "jsi", "jest", "je", "było", "byl", "była", "bylo", "byli",
-}
-IDIOMATICITY_PENALTY_WEIGHT = 0.06
-VISIBLE_FUTURE_BLEND = 0.18
+# --- extracted sub-modules ---
+from szwejk.generate.candidate_model import (  # noqa: F401 (re-exported)
+    ParagraphHybridCandidate,
+    candidate_from_dict as _candidate_from_dict,
+    _is_span_granularity,
+    _display_granularity,
+    FALLBACK_RELATIONS,
+    TOKEN_CONFIDENCE_PENALTY,
+    STRUCTURAL_CONFIDENCE_PENALTY,
+    FUNCTIONAL_UPOS,
+    DEFAULT_BLOCKED_STANDALONE_UPOS,
+    FALLBACK_STOPWORDS,
+    SURFACE_FUNCTION_WORDS,
+    IDIOMATICITY_PENALTY_WEIGHT,
+    VISIBLE_FUTURE_BLEND,
+)
+from szwejk.generate.plan_metrics import (  # noqa: F401 (re-exported)
+    _mean,
+    _word_count,
+    _target_token_keys,
+    _source_token_keys,
+    _covered_target_tokens,
+    _candidate_simple_mass,
+    _target_span_word_count,
+    _candidate_marginal_target_simple_mass,
+    _selected_simple_mass,
+    _selected_marginal_target_simple_mass,
+    _visible_czechness,
+    _simple_czechness,
+    _visible_target,
+    _future_czechness,
+    _target_future_czechness,
+)
+from szwejk.generate.family_tracking import (  # noqa: F401 (re-exported)
+    _annotate_family_trust,
+    _annotate_family_timeline,
+    _annotate_family_schedule,
+    _build_family_weight_lookup,
+    _family_is_functional,
+    _cost_family_ids,
+    _candidate_cost_target_lemmas,
+)
 
-
-@dataclass(slots=True)
-class ParagraphHybridCandidate:
-    candidate_id: str
-    chapter_pair: tuple[int, int]
-    unit_index: int
-    granularity: str
-    scope_id: str
-    source_span: tuple[int, int]
-    target_span: tuple[int, int]
-    source_text: str
-    target_text: str
-    family_ids: list[str]
-    score: float
-    relation: str
-    metadata: dict[str, object]
-
-    @property
-    def is_fallback(self) -> bool:
-        return self.relation in FALLBACK_RELATIONS
-
-    def to_dict(self) -> dict[str, object]:
-        return {
-            "candidate_id": self.candidate_id,
-            "chapter_pair": list(self.chapter_pair),
-            "unit_index": self.unit_index,
-            "granularity": self.granularity,
-            "scope_id": self.scope_id,
-            "source_span": list(self.source_span),
-            "target_span": list(self.target_span),
-            "source_text": self.source_text,
-            "target_text": self.target_text,
-            "family_ids": list(self.family_ids),
-            "score": round(self.score, 6),
-            "relation": self.relation,
-            "metadata": self.metadata,
-        }
 
 
 def load_alignment_artifact(path: str | Path) -> dict[str, object]:
@@ -191,7 +181,7 @@ def build_paragraph_hybridization_plan(
 
         actual_after = _future_czechness(remaining_after, introduced_families, family_weight_lookup=family_weight_lookup)
         if granularity_policy == "cumulative-simple":
-            cumulative_simple_mass += _selected_marginal_target_simple_mass(selected_candidates)
+            cumulative_simple_mass += _selected_simple_mass(selected_candidates)
         else:
             cumulative_simple_mass = simple_after_known + _selected_simple_mass(selected_new)
         cumulative_visible_mass = cumulative_visible_mass + _selected_visible_mass(selected_candidates)
@@ -212,7 +202,9 @@ def build_paragraph_hybridization_plan(
                 "source_word_count": unit["source_word_count"],
                 "candidate_count": len(filtered_candidates),
                 "selected_count": len(selected_candidates),
-                "selected_granularity_counts": dict(Counter(candidate.granularity for candidate in selected_candidates)),
+                "selected_granularity_counts": dict(
+                    Counter(_display_granularity(candidate.granularity) for candidate in selected_candidates)
+                ),
                 "target_future_czechness_after": target_after,
                 "target_local_simple_czechness_after": target_after if granularity_policy == "cumulative-simple" else None,
                 "target_cumulative_simple_czechness_after": cumulative_target_after if granularity_policy == "cumulative-simple" else None,
@@ -280,7 +272,7 @@ def build_paragraph_hybridization_plan(
             "final_visible_czechness": round(final_visible, 6),
             "selected_granularity_counts": dict(
                 Counter(
-                    candidate["granularity"]
+                    _display_granularity(str(candidate["granularity"]))
                     for unit in plan_units
                     for candidate in unit["selected_candidates"]
                 )
@@ -416,6 +408,12 @@ def _block_candidates(
         paragraph_target_tokens = [token for item in block_items for token in item.get("target_tokens", [])]
         paragraph_source_span = _token_index_span(paragraph_source_tokens) or source_range
         paragraph_target_span = _token_index_span(paragraph_target_tokens) or target_range
+        paragraph_coverage_source_token_keys = [
+            (f"sentence:{sentence_index}", int(token.get("index", 0) or 0))
+            for sentence_index, item in enumerate(block_items, start=1)
+            for token in item.get("source_tokens", [])
+            if int(token.get("index", 0) or 0) > 0
+        ]
         paragraph_coverage_target_token_keys = [
             (f"sentence:{sentence_index}", int(token.get("index", 0) or 0))
             for sentence_index, item in enumerate(block_items, start=1)
@@ -446,7 +444,13 @@ def _block_candidates(
                     source_tokens=paragraph_source_tokens,
                     target_tokens=paragraph_target_tokens,
                 )
-                | {"coverage_target_token_keys": paragraph_coverage_target_token_keys},
+                | {
+                    "sentence_count": sum(
+                        1 for item in block_items if item.get("enrichment_status") == "sentence_safe"
+                    ),
+                    "coverage_source_token_keys": paragraph_coverage_source_token_keys,
+                    "coverage_target_token_keys": paragraph_coverage_target_token_keys,
+                },
             )
         )
 
@@ -465,6 +469,7 @@ def _block_candidates(
         sentence_metadata = {
             "source_sentence_text": str(sentence_alignment.get("source_text", "")),
             "target_sentence_text": str(sentence_alignment.get("target_text", "")),
+            "source_sentence_tokens": _sentence_token_metadata(item.get("source_tokens", [])),
         }
         token_pairs = item.get("token_pairs", [])
         token_pair_by_source_index = {
@@ -515,6 +520,8 @@ def _block_candidates(
                             token_pairs=item.get("token_pairs", []),
                             source_span=(int(pair["source_token_index"]), int(pair["source_token_index"])),
                             target_span=(int(pair["target_token_index"]), int(pair["target_token_index"])),
+                            source_scope_id=f"sentence:{sentence_index}",
+                            target_scope_id=f"sentence:{sentence_index}",
                         ),
                         **sentence_metadata,
                     },
@@ -575,6 +582,8 @@ def _block_candidates(
                             token_pairs=item.get("token_pairs", []),
                             source_span=(int(alignment["source_span"][0]), int(alignment["source_span"][1])),
                             target_span=(int(alignment["target_span"][0]), int(alignment["target_span"][1])),
+                            source_scope_id=f"sentence:{sentence_index}",
+                            target_scope_id=f"sentence:{sentence_index}",
                         ),
                         **sentence_metadata,
                     },
@@ -625,6 +634,8 @@ def _block_candidates(
                             token_pairs=item.get("token_pairs", []),
                             source_span=(int(candidate["source_span"][0]), int(candidate["source_span"][1])),
                             target_span=(int(candidate["target_span"][0]), int(candidate["target_span"][1])),
+                            source_scope_id=f"sentence:{sentence_index}",
+                            target_scope_id=f"sentence:{sentence_index}",
                         ),
                         **sentence_metadata,
                     },
@@ -643,7 +654,11 @@ def _block_candidates(
                 and _normalize_carrier_text(phrase_target_text) == _normalize_carrier_text(str(sentence_alignment.get("target_text", "")))
             ):
                 continue
-            family_ids = _family_ids_for_span(token_family_by_span, candidate_source_span[0], candidate_source_span[1])
+            group_family_id = str(candidate.get("group_family_id", "")).strip()
+            if group_family_id:
+                family_ids = [group_family_id]
+            else:
+                family_ids = _family_ids_for_span(token_family_by_span, candidate_source_span[0], candidate_source_span[1])
             if not family_ids:
                 continue
             support = _span_token_support(
@@ -686,6 +701,8 @@ def _block_candidates(
                             token_pairs=item.get("token_pairs", []),
                             source_span=candidate_source_span,
                             target_span=candidate_target_span,
+                            source_scope_id=f"sentence:{sentence_index}",
+                            target_scope_id=f"sentence:{sentence_index}",
                         ),
                         **sentence_metadata,
                     },
@@ -693,183 +710,6 @@ def _block_candidates(
             )
 
     return candidates
-
-
-def _annotate_family_trust(units: list[dict[str, object]]) -> None:
-    family_stats: dict[str, dict[str, float]] = {}
-    for unit in units:
-        for candidate in unit.get("candidates", []):
-            if candidate.granularity != "token" or not candidate.family_ids:
-                continue
-            family_id = candidate.family_ids[0]
-            bucket = family_stats.setdefault(
-                family_id,
-                {"count": 0.0, "score_sum": 0.0, "sim_sum": 0.0, "best_score": 0.0},
-            )
-            similarity = _text_similarity(candidate.source_text, candidate.target_text)
-            bucket["count"] += 1.0
-            bucket["score_sum"] += float(candidate.score)
-            bucket["sim_sum"] += similarity
-            bucket["best_score"] = max(bucket["best_score"], float(candidate.score))
-
-    for unit in units:
-        for candidate in unit.get("candidates", []):
-            if candidate.granularity != "token" or not candidate.family_ids:
-                continue
-            family_id = candidate.family_ids[0]
-            stats = family_stats.get(family_id)
-            if not stats:
-                continue
-            count = stats["count"]
-            avg_score = stats["score_sum"] / max(count, 1.0)
-            avg_similarity = stats["sim_sum"] / max(count, 1.0)
-            count_factor = min(1.0, count / 4.0)
-            family_trust = (0.45 * count_factor) + (0.30 * avg_score) + (0.25 * avg_similarity)
-            candidate.metadata["family_trust"] = round(family_trust, 6)
-            candidate.metadata["family_count"] = int(count)
-
-
-def _annotate_family_timeline(units: list[dict[str, object]]) -> None:
-    family_occurrence_totals: Counter[str] = Counter()
-    family_occurrence_progress: defaultdict[str, int] = defaultdict(int)
-    total_occurrence_count = sum(int(unit["source_occurrence_count"]) for unit in units) or 1
-    target_lemma_totals: Counter[str] = Counter()
-    target_lemma_progress: defaultdict[str, int] = defaultdict(int)
-    total_target_lemma_count = sum(sum(unit["target_lemma_occurrences"].values()) for unit in units) or 1
-
-    for unit in units:
-        family_occurrence_totals.update(unit["family_occurrences"])
-        target_lemma_totals.update(unit["target_lemma_occurrences"])
-
-    for unit in units:
-        unit_index = int(unit["unit_index"])
-        family_stats: dict[str, dict[str, float]] = {}
-        target_lemma_stats: dict[str, dict[str, float]] = {}
-        for family_id, count in unit["family_occurrences"].items():
-            seen_before = family_occurrence_progress[family_id]
-            total_count = int(family_occurrence_totals[family_id])
-            remaining_after_unit = int(total_count - seen_before - count)
-            urgency = 1.0 / (1.0 + remaining_after_unit)
-            future_gain = remaining_after_unit / total_occurrence_count
-            popularity = min(1.0, total_count / 12.0)
-            remaining_ratio = remaining_after_unit / max(total_count, 1)
-            deferrability = popularity * remaining_ratio
-            family_stats[family_id] = {
-                "remaining_after_unit": float(remaining_after_unit),
-                "global_count": float(total_count),
-                "urgency": urgency,
-                "deferrability": deferrability,
-                "future_gain_if_introduced_here": future_gain,
-                "unit_index": float(unit_index),
-            }
-        for lemma_id, count in unit["target_lemma_occurrences"].items():
-            seen_before = target_lemma_progress[lemma_id]
-            total_count = int(target_lemma_totals[lemma_id])
-            remaining_after_unit = int(total_count - seen_before - count)
-            urgency = 1.0 / (1.0 + remaining_after_unit)
-            future_gain = remaining_after_unit / total_target_lemma_count
-            popularity = min(1.0, total_count / 12.0)
-            remaining_ratio = remaining_after_unit / max(total_count, 1)
-            deferrability = popularity * remaining_ratio
-            target_lemma_stats[lemma_id] = {
-                "remaining_after_unit": float(remaining_after_unit),
-                "global_count": float(total_count),
-                "urgency": urgency,
-                "deferrability": deferrability,
-                "future_gain_if_introduced_here": future_gain,
-                "unit_index": float(unit_index),
-            }
-        for candidate in unit.get("candidates", []):
-            if not candidate.family_ids:
-                continue
-            candidate_stats = [family_stats[family_id] for family_id in _cost_family_ids(candidate) if family_id in family_stats]
-            if not candidate_stats:
-                continue
-            candidate.metadata["family_remaining_after_unit"] = round(
-                sum(item["remaining_after_unit"] for item in candidate_stats) / len(candidate_stats), 6
-            )
-            candidate.metadata["family_urgency"] = round(
-                sum(item["urgency"] for item in candidate_stats) / len(candidate_stats), 6
-            )
-            candidate.metadata["family_deferrability"] = round(
-                sum(item["deferrability"] for item in candidate_stats) / len(candidate_stats), 6
-            )
-            candidate.metadata["family_global_count"] = round(
-                sum(item["global_count"] for item in candidate_stats) / len(candidate_stats), 6
-            )
-            candidate.metadata["family_future_gain_if_introduced_here"] = round(
-                sum(item["future_gain_if_introduced_here"] for item in candidate_stats) / len(candidate_stats), 8
-            )
-            target_stats = [
-                target_lemma_stats[lemma_id]
-                for lemma_id in _candidate_cost_target_lemmas(candidate)
-                if lemma_id in target_lemma_stats
-            ]
-            if target_stats:
-                candidate.metadata["target_lemma_remaining_after_unit"] = round(
-                    sum(item["remaining_after_unit"] for item in target_stats) / len(target_stats), 6
-                )
-                candidate.metadata["target_lemma_urgency"] = round(
-                    sum(item["urgency"] for item in target_stats) / len(target_stats), 6
-                )
-                candidate.metadata["target_lemma_deferrability"] = round(
-                    sum(item["deferrability"] for item in target_stats) / len(target_stats), 6
-                )
-                candidate.metadata["target_lemma_global_count"] = round(
-                    sum(item["global_count"] for item in target_stats) / len(target_stats), 6
-                )
-                candidate.metadata["target_lemma_future_gain_if_introduced_here"] = round(
-                    sum(item["future_gain_if_introduced_here"] for item in target_stats) / len(target_stats), 8
-                )
-        for family_id, count in unit["family_occurrences"].items():
-            family_occurrence_progress[family_id] += int(count)
-        for lemma_id, count in unit["target_lemma_occurrences"].items():
-            target_lemma_progress[lemma_id] += int(count)
-
-
-def _annotate_family_schedule(
-    units: list[dict[str, object]],
-    *,
-    lemma_schedule_payload: dict[str, object] | None,
-) -> None:
-    if not lemma_schedule_payload:
-        return
-    intro_lookup = {
-        str(item.get("family_id", "")): int(item.get("intro_unit_index", 0) or 0)
-        for item in lemma_schedule_payload.get("selected_families", [])
-        if str(item.get("family_id", "")).strip()
-    }
-    if not intro_lookup:
-        return
-    for unit in units:
-        for candidate in unit.get("candidates", []):
-            scheduled_units = [
-                intro_lookup[family_id]
-                for family_id in _cost_family_ids(candidate)
-                if family_id in intro_lookup
-            ]
-            if not scheduled_units:
-                continue
-            candidate.metadata["family_schedule_intro_unit_min"] = min(scheduled_units)
-            candidate.metadata["family_schedule_intro_unit_avg"] = round(sum(scheduled_units) / len(scheduled_units), 6)
-            candidate.metadata["family_schedule_covered_count"] = len(scheduled_units)
-
-
-def _build_family_weight_lookup(units: list[dict[str, object]]) -> dict[str, float]:
-    weights: dict[str, float] = {}
-    for unit in units:
-        for candidate in unit.get("candidates", []):
-            if candidate.granularity != "token" or not candidate.family_ids:
-                continue
-            family_id = candidate.family_ids[0]
-            source_upos = str(candidate.metadata.get("source_upos", "")).upper()
-            target_upos = str(candidate.metadata.get("target_upos", "")).upper()
-            weights.setdefault(family_id, 0.0 if _family_is_functional(source_upos, target_upos) else 1.0)
-    return weights
-
-
-def _family_is_functional(source_upos: str, target_upos: str) -> bool:
-    return source_upos in FUNCTIONAL_UPOS or target_upos in FUNCTIONAL_UPOS
 
 
 def _candidate_text_metadata(
@@ -881,6 +721,8 @@ def _candidate_text_metadata(
     token_pairs: list[dict[str, object]] | None = None,
     source_span: tuple[int, int] | None = None,
     target_span: tuple[int, int] | None = None,
+    source_scope_id: str | None = None,
+    target_scope_id: str | None = None,
 ) -> dict[str, object]:
     source_content_lemmas = _token_span_lemmas(source_tokens or [], source_span, functional=False)
     target_content_lemmas = _token_span_lemmas(target_tokens or [], target_span, functional=False)
@@ -922,11 +764,53 @@ def _candidate_text_metadata(
         )))
     target_content_lemmas = sorted(set(target_content_lemmas) | set(_fallback_text_lemmas(target_text, language="cs", functional=False)))
     target_functional_lemmas = sorted(set(target_functional_lemmas) | set(_fallback_text_lemmas(target_text, language="cs", functional=True)))
-    return {
+    metadata = {
         "candidate_source_content_lemmas": source_content_lemmas,
         "candidate_target_content_lemmas": target_content_lemmas,
         "candidate_target_functional_lemmas": target_functional_lemmas,
     }
+    if source_scope_id:
+        metadata["coverage_source_token_keys"] = _token_keys_for_span(
+            source_tokens or [],
+            source_span,
+            scope_id=source_scope_id,
+        )
+    if target_scope_id:
+        metadata["coverage_target_token_keys"] = _token_keys_for_span(
+            target_tokens or [],
+            target_span,
+            scope_id=target_scope_id,
+        )
+    return metadata
+
+
+def _token_keys_for_span(
+    tokens: list[dict[str, object]],
+    span: tuple[int, int] | None,
+    *,
+    scope_id: str,
+) -> list[tuple[str, int]]:
+    result: list[tuple[str, int]] = []
+    for token in tokens:
+        index = int(token.get("index", 0) or 0)
+        if index <= 0:
+            continue
+        if span is not None and not (span[0] <= index <= span[1]):
+            continue
+        result.append((scope_id, index))
+    return result
+
+
+def _sentence_token_metadata(tokens: list[dict[str, object]]) -> list[dict[str, object]]:
+    return [
+        {
+            "index": int(token.get("index", 0) or 0),
+            "text": str(token.get("text", "")),
+            "kind": str(token.get("kind", "")),
+        }
+        for token in tokens
+        if int(token.get("index", 0) or 0) > 0
+    ]
 
 
 def _pair_span_lemmas(
@@ -1038,19 +922,6 @@ def _tokens_have_lemma_data(tokens: list[dict[str, object]], span: tuple[int, in
     return False
 
 
-def _candidate_cost_target_lemmas(candidate: ParagraphHybridCandidate) -> list[str]:
-    lemmas = {
-        str(item).strip()
-        for bucket in (
-            candidate.metadata.get("candidate_target_content_lemmas", []),
-            candidate.metadata.get("candidate_target_functional_lemmas", []),
-        )
-        for item in bucket
-        if str(item).strip()
-    }
-    return sorted(lemmas)
-
-
 def _covered_target_lemmas(candidate: ParagraphHybridCandidate) -> set[str]:
     covered: set[str] = set()
     for family_id in _cost_family_ids(candidate):
@@ -1082,13 +953,6 @@ def _target_lemma_occurrences(block_items: list[dict[str, object]]) -> Counter[s
             if lemma:
                 counts[lemma] += 1
     return counts
-
-
-def _cost_family_ids(candidate: ParagraphHybridCandidate) -> list[str]:
-    content = [str(item) for item in candidate.metadata.get("content_family_ids", []) if str(item).strip()]
-    if content:
-        return content
-    return list(candidate.family_ids)
 
 
 def _family_id_for_token_pair(pair: dict[str, object]) -> str | None:
@@ -1156,13 +1020,6 @@ def _should_attach_left(token: dict[str, object]) -> bool:
     if upos in {"PART", "AUX"} and len(str(token.get("text", ""))) <= 2:
         return True
     return False
-
-
-def _mean(values) -> float:
-    collected = list(values)
-    if not collected:
-        return 0.0
-    return sum(collected) / len(collected)
 
 
 def _span_token_support(
@@ -1320,16 +1177,11 @@ def _select_introducing_candidates(
                 known_context_mass=known_context_mass,
             )
             deferrability_penalty = _lemma_deferrability_penalty(candidate, progress=progress)
-            local_scope_penalty = _local_scope_penalty(
-                candidate,
-                candidates=available,
-                paragraph_target_lemmas=paragraph_target_lemmas,
-            )
             weighted_distance = target_lemma_distance + _confidence_penalty(candidate) + _idiomaticity_penalty(
                 candidate,
                 progress=progress,
                 idiomaticity_penalty_weight=idiomaticity_penalty_weight,
-            ) + early_carrier_penalty + deferrability_penalty + local_scope_penalty - _lemma_urgency_bonus(candidate, progress=progress) - contextual_credit
+            ) + early_carrier_penalty + deferrability_penalty - _lemma_urgency_bonus(candidate, progress=progress) - contextual_credit
             if granularity_policy == "smooth":
                 weighted_distance += _granularity_progress_penalty(candidate, progress=progress)
             elif granularity_policy == "visible-smooth":
@@ -1346,7 +1198,6 @@ def _select_introducing_candidates(
                     )
                     + early_carrier_penalty
                     + deferrability_penalty
-                    + local_scope_penalty
                     + _granularity_progress_penalty(candidate, progress=progress)
                     - _lemma_urgency_bonus(candidate, progress=progress)
                     - contextual_credit
@@ -1363,8 +1214,8 @@ def _select_introducing_candidates(
                     continue
                 simple_after = _simple_czechness(simple_mass + marginal_simple_gain, seen_word_count_after)
                 simple_distance = abs(simple_after - target_after)
-                # v15: for cumulative-simple, rank almost purely by fit to cumulative
-                # Czechness and use novelty as the explicit secondary criterion.
+                # Rank cumulative-simple candidates purely by fit to the
+                # cumulative target; novelty stays only as a secondary sort key.
                 weighted_distance = simple_distance
             elif granularity_policy == "reader-visible-late":
                 weighted_distance = (
@@ -1377,7 +1228,6 @@ def _select_introducing_candidates(
                     )
                     + early_carrier_penalty
                     + deferrability_penalty
-                    + local_scope_penalty
                     - _late_visible_bonus(candidate, progress=progress)
                     - _lemma_urgency_bonus(candidate, progress=progress)
                     - contextual_credit
@@ -1441,122 +1291,8 @@ def _select_introducing_candidates(
     return chosen, removed_ids
 
 
-def _future_czechness(
-    remaining_after: Counter[str],
-    introduced_families: set[str],
-    *,
-    family_weight_lookup: dict[str, float] | None = None,
-) -> float:
-    family_weight_lookup = family_weight_lookup or {}
-    total = sum(count * family_weight_lookup.get(family_id, 1.0) for family_id, count in remaining_after.items())
-    if total <= 0:
-        return 1.0
-    covered = sum(
-        count * family_weight_lookup.get(family_id, 1.0)
-        for family_id, count in remaining_after.items()
-        if family_id in introduced_families
-    )
-    return covered / total
-
-
-def _target_future_czechness(
-    remaining_target_after: Counter[str],
-    introduced_target_lemmas: set[str],
-) -> float:
-    total = sum(int(count) for count in remaining_target_after.values())
-    if total <= 0:
-        return 1.0
-    covered = sum(
-        int(count)
-        for lemma, count in remaining_target_after.items()
-        if lemma in introduced_target_lemmas
-    )
-    return covered / total
-
-
-def _visible_czechness(visible_mass: float, total_word_count: int) -> float:
-    if total_word_count <= 0:
-        return 0.0
-    return min(1.0, max(0.0, visible_mass / total_word_count))
-
-
-def _visible_target(progress: float, power: float) -> float:
-    progress = max(0.0, min(1.0, progress))
-    return min(0.92, 0.02 + (0.90 * (progress**power)))
-
-
 def _selected_visible_mass(candidates: list[ParagraphHybridCandidate]) -> float:
     return sum(_candidate_visible_mass(candidate) for candidate in candidates)
-
-
-def _selected_simple_mass(candidates: list[ParagraphHybridCandidate]) -> float:
-    return sum(_candidate_simple_mass(candidate) for candidate in candidates)
-
-
-def _selected_marginal_target_simple_mass(candidates: list[ParagraphHybridCandidate]) -> float:
-    covered: set[tuple[str, int]] = set()
-    total = 0.0
-    for candidate in sorted(
-        candidates,
-        key=lambda item: (
-            item.granularity != "paragraph",
-            item.granularity != "sentence",
-            -float(_target_span_word_count(item)),
-            -item.score,
-            item.candidate_id,
-        ),
-    ):
-        total += _candidate_marginal_target_simple_mass(candidate, covered_target_tokens=covered)
-        covered.update(_target_token_keys(candidate))
-    return total
-
-
-def _simple_czechness(simple_mass: float, total_word_count: int) -> float:
-    if total_word_count <= 0:
-        return 0.0
-    return min(1.0, max(0.0, simple_mass / total_word_count))
-
-
-def _candidate_simple_mass(candidate: ParagraphHybridCandidate) -> float:
-    return max(1.0, float(candidate.metadata.get("source_word_count", _word_count(candidate.source_text))))
-
-
-def _target_span_word_count(candidate: ParagraphHybridCandidate) -> int:
-    return max(1, int(candidate.metadata.get("target_word_count", _word_count(candidate.target_text))))
-
-
-def _target_token_keys(candidate: ParagraphHybridCandidate) -> set[tuple[str, int]]:
-    explicit_keys = candidate.metadata.get("coverage_target_token_keys")
-    if explicit_keys:
-        normalized: set[tuple[str, int]] = set()
-        for item in explicit_keys:
-            if isinstance(item, (list, tuple)) and len(item) == 2:
-                normalized.add((str(item[0]), int(item[1])))
-        if normalized:
-            return normalized
-    start, end = int(candidate.target_span[0]), int(candidate.target_span[1])
-    if end < start:
-        return set()
-    return {(candidate.scope_id, index) for index in range(start, end + 1)}
-
-
-def _covered_target_tokens(candidates: list[ParagraphHybridCandidate]) -> set[tuple[str, int]]:
-    covered: set[tuple[str, int]] = set()
-    for candidate in candidates:
-        covered.update(_target_token_keys(candidate))
-    return covered
-
-
-def _candidate_marginal_target_simple_mass(
-    candidate: ParagraphHybridCandidate,
-    *,
-    covered_target_tokens: set[tuple[str, int]],
-) -> float:
-    token_keys = _target_token_keys(candidate)
-    if not token_keys:
-        return 0.0
-    uncovered = token_keys - covered_target_tokens
-    return float(len(uncovered))
 
 
 def _promote_large_carriers(
@@ -1568,17 +1304,54 @@ def _promote_large_carriers(
 ) -> list[ParagraphHybridCandidate]:
     current = list(selected_candidates)
     by_id = {candidate.candidate_id: candidate for candidate in current}
+    sentence_pool = sorted(
+        [
+            candidate
+            for candidate in candidates
+            if candidate.granularity == "sentence"
+            and candidate.candidate_id not in by_id
+            and _candidate_allowed_as_surface_carrier(candidate)
+            and _candidate_allowed_by_promotion_safety(candidate)
+        ],
+        key=lambda item: (
+            item.scope_id,
+            -float(_target_span_word_count(item)),
+            -item.score,
+            item.candidate_id,
+        ),
+    )
+    for candidate in sentence_pool:
+        scope_selected = [item for item in current if item.scope_id == candidate.scope_id]
+        if len(scope_selected) < 1:
+            continue
+        conflicts = [item for item in scope_selected if _conflicts(candidate, item)]
+        if len(conflicts) < 1:
+            continue
+        candidate_lemmas = set(_candidate_cost_target_lemmas(candidate))
+        if not candidate_lemmas:
+            continue
+        base_lemmas = set(introduced_target_lemmas)
+        for item in conflicts:
+            base_lemmas.update(_candidate_cost_target_lemmas(item))
+        known_ratio = len(candidate_lemmas & base_lemmas) / max(len(candidate_lemmas), 1)
+        if known_ratio < _promotion_known_lemma_threshold(candidate, progress):
+            continue
+        conflict_ids = {item.candidate_id for item in conflicts}
+        current = [item for item in current if item.candidate_id not in conflict_ids]
+        current.append(candidate)
+
+    by_id = {candidate.candidate_id: candidate for candidate in current}
     candidate_pool = sorted(
         [
             candidate
             for candidate in candidates
-            if candidate.granularity in {"sentence", "paragraph"}
+            if candidate.granularity == "paragraph"
             and candidate.candidate_id not in by_id
             and _candidate_allowed_as_surface_carrier(candidate)
+            and _candidate_allowed_by_promotion_safety(candidate)
         ],
         key=lambda item: (
             item.scope_id,
-            item.granularity != "paragraph",
             -float(_target_span_word_count(item)),
             -item.score,
             item.candidate_id,
@@ -1595,18 +1368,17 @@ def _promote_large_carriers(
         conflicts = [item for item in pool_selected if _conflicts(candidate, item)]
         if len(conflicts) < 1:
             continue
-        if any(not _candidate_contains(candidate, item) for item in conflicts):
-            continue
-        covered = _covered_target_tokens(conflicts)
-        target_tokens = _target_token_keys(candidate)
-        if not target_tokens:
-            continue
-        coverage_ratio = len(covered & target_tokens) / max(len(target_tokens), 1)
-        if coverage_ratio < _promotion_coverage_threshold(progress):
+        candidate_lemmas = set(_candidate_cost_target_lemmas(candidate))
+        if not candidate_lemmas:
             continue
         base_lemmas = set(introduced_target_lemmas)
         for item in conflicts:
             base_lemmas.update(_candidate_cost_target_lemmas(item))
+        known_ratio = len(candidate_lemmas & base_lemmas) / max(len(candidate_lemmas), 1)
+        if known_ratio < _promotion_known_lemma_threshold(candidate, progress):
+            continue
+        if not _candidate_allowed_by_promotion_shape(candidate, conflicts=conflicts, base_lemmas=base_lemmas):
+            continue
         conflict_ids = {item.candidate_id for item in conflicts}
         current = [item for item in current if item.candidate_id not in conflict_ids]
         current.append(candidate)
@@ -1614,9 +1386,55 @@ def _promote_large_carriers(
     return current
 
 
-def _promotion_coverage_threshold(progress: float) -> float:
+def _promotion_known_lemma_threshold(candidate: ParagraphHybridCandidate, progress: float) -> float:
     _ = progress
-    return 0.89
+    if candidate.granularity == "paragraph":
+        return 0.95
+    return 0.85
+
+
+def _candidate_allowed_by_promotion_safety(candidate: ParagraphHybridCandidate) -> bool:
+    if candidate.granularity == "sentence":
+        return float(candidate.score) >= _promotion_score_floor(candidate)
+    if candidate.granularity == "paragraph":
+        return True
+    return _candidate_allowed_by_safety(candidate)
+
+
+def _promotion_score_floor(candidate: ParagraphHybridCandidate) -> float:
+    width = max(
+        1.0,
+        float(candidate.metadata.get("source_word_count", _word_count(candidate.source_text))),
+        float(candidate.metadata.get("target_word_count", _word_count(candidate.target_text))),
+    )
+    if candidate.granularity == "sentence":
+        if width <= 5:
+            return 0.62
+        if width <= 8:
+            return 0.60
+        if width <= 12:
+            return 0.58
+        return 0.56
+    if candidate.granularity == "paragraph":
+        if width <= 12:
+            return 0.60
+        if width <= 20:
+            return 0.58
+        return 0.56
+    return 0.0
+
+
+def _candidate_allowed_by_promotion_shape(
+    candidate: ParagraphHybridCandidate,
+    *,
+    conflicts: list[ParagraphHybridCandidate],
+    base_lemmas: set[str],
+) -> bool:
+    _ = conflicts
+    _ = base_lemmas
+    if candidate.granularity != "paragraph":
+        return True
+    return int(candidate.metadata.get("sentence_count", 1) or 1) >= 2
 
 
 def _candidate_visible_mass(candidate: ParagraphHybridCandidate) -> float:
@@ -1634,7 +1452,7 @@ def _late_visible_bonus(candidate: ParagraphHybridCandidate, *, progress: float)
     normalized_mass = min(1.0, visible_mass / 4.0)
     if candidate.granularity == "token":
         scale = 0.035
-    elif candidate.granularity in {"phrase", "subtree"}:
+    elif _is_span_granularity(candidate.granularity):
         scale = 0.085
     elif candidate.granularity == "sentence":
         scale = 0.12
@@ -1646,7 +1464,7 @@ def _late_visible_bonus(candidate: ParagraphHybridCandidate, *, progress: float)
 
 
 def _candidate_idiomaticity(candidate: ParagraphHybridCandidate) -> float:
-    if candidate.granularity not in {"phrase", "subtree", "sentence", "paragraph"}:
+    if not (_is_span_granularity(candidate.granularity) or candidate.granularity in {"sentence", "paragraph"}):
         return 0.0
     support = float(candidate.metadata.get("token_support_ratio", 1.0))
     semantic = max(0.0, min(1.0, float(candidate.score)))
@@ -1675,7 +1493,7 @@ def _effective_new_family_count(candidate: ParagraphHybridCandidate, *, new_fami
     if unique_count <= 0.0:
         return 0.0
     idiomaticity = _candidate_idiomaticity(candidate)
-    if idiomaticity >= 0.45 and candidate.granularity in {"phrase", "subtree", "sentence"}:
+    if idiomaticity >= 0.45 and (_is_span_granularity(candidate.granularity) or candidate.granularity == "sentence"):
         return 1.0
     return unique_count
 
@@ -1700,7 +1518,7 @@ def _new_family_penalty(
         deferrable = min(1.0, remaining / 10.0)
         family_penalty += 0.008 + (0.028 * deferrable * phase_weight)
     family_penalty *= effective_count / max(raw_count, 1.0)
-    if candidate.granularity in {"phrase", "subtree", "sentence", "paragraph"} and effective_count <= 1.0:
+    if (_is_span_granularity(candidate.granularity) or candidate.granularity in {"sentence", "paragraph"}) and effective_count <= 1.0:
         family_penalty *= 0.5
     return family_penalty
 
@@ -1749,7 +1567,7 @@ def _known_context_credit(
         if effective_new_family_count <= 1.0:
             credit += functional_context * phase_weight * 0.01
     if (
-        candidate.granularity in {"phrase", "subtree"}
+        _is_span_granularity(candidate.granularity)
         and effective_new_family_count <= 1.0
         and len(_candidate_cost_target_lemmas(candidate)) <= 1
         and width <= 4.0
@@ -1873,7 +1691,7 @@ def _uncovered_content_penalty(
     paragraph_target_lemmas: set[str],
     progress: float,
 ) -> float:
-    if candidate.granularity not in {"phrase", "subtree", "sentence", "paragraph"}:
+    if not (_is_span_granularity(candidate.granularity) or candidate.granularity in {"sentence", "paragraph"}):
         return 0.0
     content_lemmas = {lemma for lemma in _candidate_cost_target_lemmas(candidate) if lemma}
     if not content_lemmas:
@@ -1907,7 +1725,7 @@ def _candidate_allowed_by_safety(candidate: ParagraphHybridCandidate) -> bool:
     semantic = _semantic_confidence(candidate)
     similarity = _text_similarity(candidate.source_text, candidate.target_text)
     width = max(_word_count(candidate.source_text), _word_count(candidate.target_text), 1)
-    if candidate.granularity in {"phrase", "subtree"}:
+    if _is_span_granularity(candidate.granularity):
         if semantic >= 0.72 and support < 0.28:
             return True
         if width <= 3:
@@ -1969,7 +1787,7 @@ def _target_lemma_penalty(
         remaining = max(0, int(remaining_target_after.get(lemma, 0)))
         deferrable = min(1.0, remaining / 10.0)
         penalty += 0.01 + (0.032 * deferrable * early_phase_weight)
-    if candidate.granularity in {"phrase", "subtree", "sentence", "paragraph"}:
+    if _is_span_granularity(candidate.granularity) or candidate.granularity in {"sentence", "paragraph"}:
         uncovered = [lemma for lemma in unique_lemmas if lemma not in _covered_target_lemmas(candidate)]
         if uncovered:
             penalty += 0.012 * len(uncovered)
@@ -2096,8 +1914,6 @@ def _apply_chapter_simple_boost(
                 for candidate in unit_data.get("candidates", []):
                     if candidate.is_fallback or not candidate.family_ids or candidate.candidate_id in selected_ids:
                         continue
-                    if not _candidate_allowed_by_progress(candidate, progress=max(progress, boost_start)):
-                        continue
                     conflicting = [other for other in selected if _conflicts(candidate, other)]
                     gain = _candidate_simple_mass(candidate) - sum(_candidate_simple_mass(other) for other in conflicting)
                     visible_delta = _candidate_visible_mass(candidate) - sum(_candidate_visible_mass(other) for other in conflicting)
@@ -2110,19 +1926,8 @@ def _apply_chapter_simple_boost(
                             paragraph_target_lemmas=selected_target_lemmas,
                             progress=progress,
                         )
-                        + _local_scope_penalty(
-                            candidate,
-                            candidates=unit_data.get("candidates", []),
-                            paragraph_families={family_id for selected_candidate in selected for family_id in selected_candidate.family_ids},
-                            paragraph_target_lemmas=selected_target_lemmas,
-                        )
-                        + (0.5 * _granularity_progress_penalty(candidate, progress=progress))
                     )
                     value = gain + (0.18 * visible_delta) - (9.0 * penalty)
-                    if candidate.granularity == "paragraph" and progress < 0.82:
-                        value -= 0.7
-                    if candidate.granularity == "sentence" and progress < 0.72:
-                        value -= 0.2
                     if best_pick is None or value > best_pick[0]:
                         best_pick = (value, plan_unit, candidate, conflicting)
             if best_pick is None or best_pick[0] <= 0.0:
@@ -2137,7 +1942,7 @@ def _apply_chapter_simple_boost(
             plan_unit["selected_candidates"] = selected_payloads
             plan_unit["selected_count"] = len(plan_unit["selected_candidates"])
             plan_unit["selected_granularity_counts"] = dict(
-                Counter(item["granularity"] for item in plan_unit["selected_candidates"])
+                Counter(_display_granularity(str(item["granularity"])) for item in plan_unit["selected_candidates"])
             )
             current_simple_mass += _candidate_simple_mass(candidate) - sum(_candidate_simple_mass(other) for other in conflicting)
             current_simple = current_simple_mass / chapter_word_count
@@ -2177,7 +1982,9 @@ def _refresh_plan_metrics(
         actual_after = _future_czechness(remaining_after, introduced_families, family_weight_lookup=family_weight_lookup)
         visible_after = _visible_czechness(cumulative_visible_mass, cumulative_word_count)
         plan_unit["selected_count"] = len(selected_candidates)
-        plan_unit["selected_granularity_counts"] = dict(Counter(candidate.granularity for candidate in selected_candidates))
+        plan_unit["selected_granularity_counts"] = dict(
+            Counter(_display_granularity(candidate.granularity) for candidate in selected_candidates)
+        )
         plan_unit["actual_future_czechness_before"] = round(actual_before, 6)
         plan_unit["actual_future_czechness_after"] = round(actual_after, 6)
         plan_unit["actual_visible_czechness_before"] = round(visible_before, 6)
@@ -2207,6 +2014,14 @@ def _candidate_from_dict(payload: dict[str, object]) -> ParagraphHybridCandidate
 
 
 def _conflicts(left: ParagraphHybridCandidate, right: ParagraphHybridCandidate) -> bool:
+    left_source_keys = _source_token_keys(left)
+    right_source_keys = _source_token_keys(right)
+    left_target_keys = _target_token_keys(left)
+    right_target_keys = _target_token_keys(right)
+    if left_source_keys and right_source_keys and (left_source_keys & right_source_keys):
+        return True
+    if left_target_keys and right_target_keys and (left_target_keys & right_target_keys):
+        return True
     if left.scope_id == "block" or right.scope_id == "block":
         return True
     if left.scope_id != right.scope_id:
@@ -2225,6 +2040,12 @@ def _span_contains(outer: tuple[int, int], inner: tuple[int, int]) -> bool:
 
 
 def _candidate_contains(outer: ParagraphHybridCandidate, inner: ParagraphHybridCandidate) -> bool:
+    outer_source_keys = _source_token_keys(outer)
+    inner_source_keys = _source_token_keys(inner)
+    outer_target_keys = _target_token_keys(outer)
+    inner_target_keys = _target_token_keys(inner)
+    if outer_source_keys and inner_source_keys and outer_target_keys and inner_target_keys:
+        return inner_source_keys.issubset(outer_source_keys) and inner_target_keys.issubset(outer_target_keys)
     return _span_contains(outer.source_span, inner.source_span) and _span_contains(outer.target_span, inner.target_span)
 
 
@@ -2248,7 +2069,7 @@ def _candidate_allowed_as_surface_carrier(candidate: ParagraphHybridCandidate) -
         float(candidate.metadata.get("source_word_count", _word_count(candidate.source_text))),
         float(candidate.metadata.get("target_word_count", _word_count(candidate.target_text))),
     )
-    if candidate.granularity in {"phrase", "subtree", "sentence", "paragraph"} and width <= 1.0:
+    if (_is_span_granularity(candidate.granularity) or candidate.granularity in {"sentence", "paragraph"}) and width <= 1.0:
         return False
     return width > 1.0
 
@@ -2365,7 +2186,7 @@ def _confidence_penalty(candidate: ParagraphHybridCandidate) -> float:
         penalty *= 0.45
     elif semantic < 0.6 and structural < 0.25:
         penalty += 0.02
-    if candidate.granularity in {"phrase", "subtree"} and target_content_lemmas <= 1 and target_functional_context > 0:
+    if _is_span_granularity(candidate.granularity) and target_content_lemmas <= 1 and target_functional_context > 0:
         penalty *= 0.35
     return penalty
 
@@ -2374,15 +2195,11 @@ def _candidate_allowed_by_progress(candidate: ParagraphHybridCandidate, *, progr
     progress = max(0.0, min(1.0, progress))
     if candidate.granularity == "token":
         return _token_allowed_by_progress(candidate, progress=progress)
-    if candidate.granularity in {"phrase", "subtree"}:
+    if _is_span_granularity(candidate.granularity):
         return _structural_candidate_allowed(candidate, progress=progress)
     if candidate.granularity == "sentence":
-        if progress < 0.55:
-            return False
         return candidate.score >= 0.62
     if candidate.granularity == "paragraph":
-        if progress < 0.78:
-            return False
         return candidate.score >= 0.5
     return True
 
@@ -2451,7 +2268,7 @@ def _idiomaticity_penalty(
 ) -> float:
     if idiomaticity_penalty_weight <= 0:
         return 0.0
-    if candidate.granularity not in {"phrase", "subtree"}:
+    if not _is_span_granularity(candidate.granularity):
         return 0.0
     idiomaticity = _candidate_idiomaticity(candidate)
     if idiomaticity <= 0:
@@ -2477,7 +2294,7 @@ def _granularity_progress_penalty(candidate: ParagraphHybridCandidate, *, progre
         introduction_bonus = max(0.0, min(1.0, transparency) - 0.72) * (phase**1.15) * 0.028
         return (readability_penalty * (phase**1.35) * 0.085) - introduction_bonus
 
-    if candidate.granularity in {"phrase", "subtree"}:
+    if _is_span_granularity(candidate.granularity):
         size_factor = min(1.0, max(0.0, (width - 1) / 6.0))
         structural_strength = min(1.0, (0.45 * score) + (0.35 * support) + (0.20 * similarity))
         base = 0.28 if candidate.granularity == "phrase" else 0.31
@@ -2501,7 +2318,7 @@ def _smooth_acceptance_slack(candidate: ParagraphHybridCandidate, *, progress: f
         if str(candidate.metadata.get("source_upos", "")).upper() in {"PROPN", "NOUN", "ADJ", "NUM"}:
             transparency = min(1.0, transparency + 0.08)
         return 0.002 + (max(0.0, transparency - 0.68) * (phase**1.1) * 0.025)
-    if candidate.granularity in {"phrase", "subtree"}:
+    if _is_span_granularity(candidate.granularity):
         width = max(_word_count(candidate.source_text), _word_count(candidate.target_text), 1)
         compactness = max(0.0, 1.0 - ((width - 1) / 6.0))
         return 0.0005 + (compactness * (phase**1.45) * 0.003) + ((progress**1.8) * 0.012)
@@ -2514,7 +2331,3 @@ def _smooth_acceptance_slack(candidate: ParagraphHybridCandidate, *, progress: f
 
 def _text_similarity(left: str, right: str) -> float:
     return SequenceMatcher(a=left.strip().lower(), b=right.strip().lower()).ratio()
-
-
-def _word_count(text: str) -> int:
-    return len([part for part in text.split() if part.strip()])
