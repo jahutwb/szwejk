@@ -93,7 +93,7 @@ def build_didactic_note_bundle(document: dict[str, object]) -> dict[str, object]
 def _note_kind(action: dict[str, object]) -> str:
     if action["granularity"] == "token":
         return "lexical"
-    if action["granularity"] == "phrase":
+    if action["granularity"] in {"phrase", "subtree", "span"}:
         return "phrase"
     return "construction"
 
@@ -104,7 +104,7 @@ def _note_prompt(action: dict[str, object]) -> str:
     granularity = str(action["granularity"])
     if granularity == "token":
         return f"Nowa forma czeska: '{target_text}' zamiast polskiego '{source_text}'."
-    if granularity == "phrase":
+    if granularity in {"phrase", "subtree", "span"}:
         return f"Nowa fraza czeska: '{target_text}' odpowiada polskiemu '{source_text}'."
     return f"Nowa konstrukcja czeska: '{target_text}' zastępuje fragment '{source_text}'."
 
@@ -166,6 +166,7 @@ def build_paragraph_note_bundle(
     unit_lookup = {int(unit["unit_index"]): unit for unit in units}
 
     introduced_families: set[str] = set()
+    introduced_source_lemmas: set[str] = set()
     notes: list[ParagraphPlanNote] = []
 
     for plan_unit in plan_payload.get("units", []):
@@ -181,8 +182,23 @@ def build_paragraph_note_bundle(
         for selected in plan_unit.get("selected_candidates", []):
             candidate_id = str(selected["candidate_id"])
             selected_families = [str(item) for item in selected.get("family_ids", [])]
-            new_family_ids = [family_id for family_id in selected_families if family_id not in introduced_families]
+            # Deduplicate by SOURCE LEMMA (left side of "::", split by "+").
+            # The same Czech lemma can appear via different family_ids when the
+            # Polish source has multiple inflected forms (e.g. "ferdynand::ferdinand"
+            # vs a phrase family like "ferdynand+ten::ferdinand").  We emit a note
+            # only the first time any source lemma in the family is seen.
+            def _source_lemmas_of(family_id: str) -> list[str]:
+                left = family_id.split("::")[0] if "::" in family_id else family_id
+                return [part.strip() for part in left.split("+") if part.strip()]
+
+            new_family_ids = [
+                family_id for family_id in selected_families
+                if family_id not in introduced_families
+                and not any(lemma in introduced_source_lemmas for lemma in _source_lemmas_of(family_id))
+            ]
             introduced_families.update(selected_families)
+            for family_id in selected_families:
+                introduced_source_lemmas.update(_source_lemmas_of(family_id))
             if not new_family_ids:
                 continue
             candidate = inventory.get(candidate_id)
@@ -264,9 +280,7 @@ def _pick_note_anchor(
             continue
         if not set(candidate.family_ids) & set(new_family_ids):
             continue
-        if not _contains_span(selected_candidate.source_span, candidate.source_span):
-            continue
-        if not _contains_span(selected_candidate.target_span, candidate.target_span):
+        if not _contains_candidate_span(selected_candidate, candidate):
             continue
         if candidate.granularity == "paragraph":
             continue
@@ -275,7 +289,7 @@ def _pick_note_anchor(
     preferred = [
         candidate
         for candidate in covering
-        if candidate.granularity in {"phrase", "subtree"}
+        if candidate.granularity in {"phrase", "subtree", "span"}
         and _word_count(candidate.source_text) >= 2
         and candidate.score >= 0.6
         and _anchor_is_compact(candidate)
@@ -313,6 +327,30 @@ def _contains_span(outer: tuple[int, int], inner: tuple[int, int]) -> bool:
     return outer[0] <= inner[0] and inner[1] <= outer[1]
 
 
+def _candidate_token_keys(candidate: ParagraphHybridCandidate, *, side: str) -> set[tuple[str, int]]:
+    metadata_key = "coverage_source_token_keys" if side == "source" else "coverage_target_token_keys"
+    explicit_keys = candidate.metadata.get(metadata_key)
+    if explicit_keys:
+        normalized: set[tuple[str, int]] = set()
+        for item in explicit_keys:
+            if isinstance(item, (list, tuple)) and len(item) == 2:
+                normalized.add((str(item[0]), int(item[1])))
+        if normalized:
+            return normalized
+    span = candidate.source_span if side == "source" else candidate.target_span
+    return {(candidate.scope_id, index) for index in range(int(span[0]), int(span[1]) + 1)}
+
+
+def _contains_candidate_span(outer: ParagraphHybridCandidate, inner: ParagraphHybridCandidate) -> bool:
+    outer_source_keys = _candidate_token_keys(outer, side="source")
+    inner_source_keys = _candidate_token_keys(inner, side="source")
+    outer_target_keys = _candidate_token_keys(outer, side="target")
+    inner_target_keys = _candidate_token_keys(inner, side="target")
+    if outer_source_keys and inner_source_keys and outer_target_keys and inner_target_keys:
+        return inner_source_keys.issubset(outer_source_keys) and inner_target_keys.issubset(outer_target_keys)
+    return _contains_span(outer.source_span, inner.source_span) and _contains_span(outer.target_span, inner.target_span)
+
+
 def _word_count(text: str) -> int:
     return len([part for part in text.split() if part.strip()])
 
@@ -327,7 +365,7 @@ def _anchor_is_compact(candidate: ParagraphHybridCandidate) -> bool:
 
 
 def _idiomaticity_score(candidate: ParagraphHybridCandidate) -> float:
-    if candidate.granularity not in {"phrase", "subtree", "sentence"}:
+    if candidate.granularity not in {"phrase", "subtree", "span", "sentence"}:
         return 0.0
     support = float(candidate.metadata.get("token_support_ratio", 1.0))
     signals = dict(candidate.metadata.get("signals", {}))
