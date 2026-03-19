@@ -62,6 +62,7 @@ def build_sentence_enrichment(
         "source_tokens": source_tokens,
         "target_tokens": target_tokens,
         "token_pairs": token_pairs,
+        "token_group_candidates": [],
         "phrase_candidates": phrase_candidates,
         "dependency_candidates": dependency_candidates,
         "subtree_candidates": subtree_candidates,
@@ -154,6 +155,7 @@ def _fallback_phrase_candidates(token_pairs: list[dict[str, object]]) -> list[di
     return phrase_candidates
 
 
+
 def _group_consecutive_pairs(token_pairs: list[dict[str, object]]) -> list[list[dict[str, object]]]:
     if not token_pairs:
         return []
@@ -171,6 +173,8 @@ def _group_consecutive_pairs(token_pairs: list[dict[str, object]]) -> list[list[
         current = [pair]
     spans.append(current)
     return spans
+
+
 
 
 def _complete_with_embedding_fallback(
