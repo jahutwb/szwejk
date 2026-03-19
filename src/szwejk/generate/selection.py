@@ -3,6 +3,11 @@ from __future__ import annotations
 
 from collections import Counter, defaultdict
 
+from szwejk.generate.alignment_quality import (
+    alignment_quality_score,
+    alignment_quality_threshold,
+    linguistic_similarity_score,
+)
 from szwejk.generate.candidate_model import (
     ParagraphHybridCandidate,
     candidate_from_dict as _candidate_from_dict,
@@ -78,6 +83,188 @@ from szwejk.generate.candidate_filters import (
 # Extracted selection functions (verbatim from paragraph_hybridization.py)
 # ---------------------------------------------------------------------------
 
+
+
+# ---------------------------------------------------------------------------
+# Three-phase selection helpers
+# ---------------------------------------------------------------------------
+
+GRATIS_FAMILIARITY_THRESHOLD = 0.89
+
+
+def _source_lemmas_from_fid(fid: str) -> list[str]:
+    left = fid.split("::")[0] if "::" in fid else fid
+    return [p.strip().lower() for p in left.split("+") if p.strip()]
+
+
+def _familiarity_ratio(
+    candidate: ParagraphHybridCandidate,
+    introduced_families: set[str],
+    introduced_source_lemmas: set[str],
+) -> float:
+    fids = _cost_family_ids(candidate)
+    if not fids:
+        return 0.0
+    known = sum(
+        1
+        for fid in fids
+        if fid in introduced_families
+        or any(lemma in introduced_source_lemmas for lemma in _source_lemmas_from_fid(fid))
+    )
+    return known / len(fids)
+
+
+def _approaches_curve(
+    current_mass: float,
+    marginal_mass: float,
+    target: float,
+    seen_word_count: int,
+    visible_delta: float,
+) -> bool:
+    """True when taking a candidate with the given marginal mass moves cumulative
+    czechness closer to the target (with a small tolerance for cognate-like candidates
+    that have low visible mass and thus low reader impact)."""
+    if seen_word_count <= 0 or marginal_mass <= 0.0:
+        return False
+    current = current_mass / seen_word_count
+    after = (current_mass + marginal_mass) / seen_word_count
+    effective_visible = visible_delta / seen_word_count
+    tolerance = max(0.0, 0.02 - effective_visible)
+    return abs(after - target) < abs(current - target) + tolerance
+
+
+def _introduce_locally(
+    candidate: ParagraphHybridCandidate,
+    local_families: set[str],
+    local_source_lemmas: set[str],
+    local_target_lemmas: set[str],
+) -> None:
+    """Update local within-unit tracking sets after selecting a candidate."""
+    local_families.update(candidate.family_ids)
+    for fid in _cost_family_ids(candidate):
+        local_source_lemmas.update(_source_lemmas_from_fid(fid))
+    local_target_lemmas.update(_candidate_cost_target_lemmas(candidate))
+
+
+def _select_candidates_three_phase(
+    candidates: list[ParagraphHybridCandidate],
+    *,
+    introduced_families: set[str],
+    introduced_target_lemmas: set[str],
+    cumulative_simple_mass: float,
+    seen_word_count_after: int,
+    target_cumulative_after: float,
+    progress: float,
+    wiktionary_lookup: dict[str, list[str]] | None = None,
+) -> list[ParagraphHybridCandidate]:
+    """Three-phase candidate selector for the cumulative-simple policy.
+
+    Phase 1 — GRATIS
+        Candidates where ≥89 % of cost lemmas are already familiar.
+        Taken without checking the curve; any unfamiliar lemmas are introduced
+        via the normal path (they count as newly introduced for phases 2-3).
+
+    Phase 2 — FILTER  (no czechness update between candidates)
+        Remaining candidates sorted by alignment_quality_score.
+        Stop when quality drops below per-granularity threshold.
+        Skip candidates that would move czechness away from the curve.
+        Survivors form the pool.
+
+    Phase 3 — GREEDY from pool  (czechness updated after each selection)
+        Pool re-sorted by (alignment_quality_score DESC, linguistic_similarity DESC).
+        Take each candidate that approaches the curve; skip those that don't
+        (continue checking the rest of the pool — never stop early).
+    """
+    # ── derive introduced source lemmas from introduced_families ────────────
+    intro_source: set[str] = set()
+    for fid in introduced_families:
+        intro_source.update(_source_lemmas_from_fid(fid))
+
+    local_fam = set(introduced_families)
+    local_src = set(intro_source)
+    local_tgt = set(introduced_target_lemmas)
+    covered: set[tuple[str, int]] = set()
+    running_mass = cumulative_simple_mass
+
+    # ── PHASE 1 ─────────────────────────────────────────────────────────────
+    gratis_pool = [
+        c for c in candidates
+        if _familiarity_ratio(c, local_fam, local_src) >= GRATIS_FAMILIARITY_THRESHOLD
+        and _candidate_allowed_as_surface_carrier(c)
+    ]
+    gratis_pool.sort(key=lambda c: (
+        -float(_target_span_word_count(c)),
+        -alignment_quality_score(c),
+        c.candidate_id,
+    ))
+    selected_gratis: list[ParagraphHybridCandidate] = []
+    for cand in gratis_pool:
+        if any(_conflicts(cand, other) for other in selected_gratis):
+            continue
+        selected_gratis.append(cand)
+        keys = _target_token_keys(cand)
+        running_mass += float(len(keys - covered))
+        covered.update(keys)
+        _introduce_locally(cand, local_fam, local_src, local_tgt)
+
+    gratis_ids = {c.candidate_id for c in selected_gratis}
+
+    # ── PHASE 2 ─────────────────────────────────────────────────────────────
+    remaining = [
+        c for c in candidates
+        if c.candidate_id not in gratis_ids
+        and _candidate_allowed_as_surface_carrier(c)
+        and not _candidate_blocked_by_family_schedule(c, paragraph_families=local_fam)
+    ]
+    remaining.sort(key=lambda c: (-alignment_quality_score(c), c.candidate_id))
+
+    pool: list[ParagraphHybridCandidate] = []
+    for cand in remaining:
+        aq = alignment_quality_score(cand)
+        if aq < alignment_quality_threshold(cand.granularity):
+            break  # list is sorted — tail is all below threshold
+        keys = _target_token_keys(cand)
+        marginal = float(len(keys - covered))
+        if marginal <= 0.0:
+            continue
+        if _approaches_curve(
+            running_mass, marginal, target_cumulative_after,
+            seen_word_count_after, _candidate_visible_mass(cand),
+        ):
+            pool.append(cand)
+        # else: skip but keep scanning
+
+    # ── PHASE 3 ─────────────────────────────────────────────────────────────
+    pool.sort(key=lambda c: (
+        -alignment_quality_score(c),
+        -linguistic_similarity_score(c, wiktionary_lookup),
+        c.candidate_id,
+    ))
+    selected_new: list[ParagraphHybridCandidate] = []
+    p3_covered = set(covered)
+    p3_mass = running_mass
+    p3_fam = set(local_fam)
+    p3_src = set(local_src)
+    p3_tgt = set(local_tgt)
+
+    for cand in pool:
+        if any(_conflicts(cand, other) for other in selected_new):
+            continue
+        keys = _target_token_keys(cand)
+        marginal = float(len(keys - p3_covered))
+        if marginal <= 0.0:
+            continue
+        if not _approaches_curve(
+            p3_mass, marginal, target_cumulative_after,
+            seen_word_count_after, _candidate_visible_mass(cand),
+        ):
+            continue  # skip, check next — never stop early
+        selected_new.append(cand)
+        p3_covered.update(keys)
+        p3_mass += marginal
+        _introduce_locally(cand, p3_fam, p3_src, p3_tgt)
+
+    return selected_gratis + selected_new
 
 
 def _promotion_known_lemma_threshold(candidate: ParagraphHybridCandidate, progress: float) -> float:

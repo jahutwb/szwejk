@@ -94,6 +94,7 @@ from szwejk.generate.selection import (  # noqa: F401 (re-exported)
     _promotion_known_lemma_threshold,
     _select_known_candidates,
     _select_introducing_candidates,
+    _select_candidates_three_phase,
     _promote_large_carriers,
     _apply_chapter_simple_boost,
     _refresh_plan_metrics,
@@ -115,6 +116,7 @@ def build_paragraph_hybridization_plan(
     chapter_simple_target_max: float = 0.85,
     chapter_simple_boost_start: float = 0.55,
     lemma_schedule_payload: dict[str, object] | None = None,
+    wiktionary_lookup: dict[str, list[str]] | None = None,
 ) -> dict[str, object]:
     units = _build_units(alignment_artifact, blocked_standalone_upos=blocked_standalone_upos)
     family_weight_lookup = _build_family_weight_lookup(units)
@@ -170,59 +172,73 @@ def build_paragraph_hybridization_plan(
             for candidate in unit["candidates"]
             if not candidate.is_fallback and _candidate_cost_target_lemmas(candidate)
         ]
-        selected_known, blocked_ids = _select_known_candidates(
-            filtered_candidates,
-            introduced_families,
-            introduced_target_lemmas=introduced_target_lemmas,
-            granularity_policy=granularity_policy,
-            target_after=cumulative_target_after if granularity_policy == "cumulative-simple" else target_after,
-            current_simple_mass=cumulative_simple_mass,
-            seen_word_count_after=cumulative_word_count,
-        )
-        paragraph_families = set(introduced_families)
-        paragraph_target_lemmas = set(introduced_target_lemmas)
-        selected_candidates = list(selected_known)
-        for candidate in selected_known:
-            paragraph_families.update(candidate.family_ids)
-            paragraph_target_lemmas.update(_candidate_cost_target_lemmas(candidate))
-
-        current_actual = _future_czechness(remaining_after, paragraph_families, family_weight_lookup=family_weight_lookup)
         simple_before_unit = _simple_czechness(cumulative_simple_mass, cumulative_word_count)
         visible_before_unit = cumulative_visible_mass
-        simple_after_known = cumulative_simple_mass + _selected_simple_mass(selected_known)
-        visible_after_known = cumulative_visible_mass + _selected_visible_mass(selected_known)
-        introducing_candidates = [
-            candidate
-            for candidate in filtered_candidates
-            if candidate.candidate_id not in blocked_ids
-            and any(lemma not in introduced_target_lemmas for lemma in _candidate_cost_target_lemmas(candidate))
-        ]
-        selected_new, removed_known_ids = _select_introducing_candidates(
-            introducing_candidates,
-            selected_candidates=selected_candidates,
-            introduced_families=introduced_families,
-            introduced_target_lemmas=introduced_target_lemmas,
-            remaining_after=remaining_after,
-            remaining_target_after=remaining_target_after,
-            family_weight_lookup=family_weight_lookup,
-            target_after=cumulative_target_after if granularity_policy == "cumulative-simple" else target_after,
-            progress=progress,
-            idiomaticity_penalty_weight=idiomaticity_penalty_weight,
-            granularity_policy=granularity_policy,
-            current_simple_mass=simple_after_known,
-            current_visible_mass=visible_after_known,
-            seen_word_count_after=cumulative_word_count,
-        )
-        if removed_known_ids:
-            selected_candidates = [candidate for candidate in selected_candidates if candidate.candidate_id not in removed_known_ids]
-        selected_candidates.extend(selected_new)
+
         if granularity_policy == "cumulative-simple":
+            # ── New three-phase algorithm ────────────────────────────────────
+            selected_candidates = _select_candidates_three_phase(
+                filtered_candidates,
+                introduced_families=introduced_families,
+                introduced_target_lemmas=introduced_target_lemmas,
+                cumulative_simple_mass=cumulative_simple_mass,
+                seen_word_count_after=cumulative_word_count,
+                target_cumulative_after=cumulative_target_after,
+                progress=progress,
+                wiktionary_lookup=wiktionary_lookup,
+            )
             selected_candidates = _promote_large_carriers(
                 selected_candidates=selected_candidates,
                 candidates=filtered_candidates,
                 introduced_target_lemmas=introduced_target_lemmas,
                 progress=progress,
             )
+        else:
+            # ── Legacy algorithm for other policies ──────────────────────────
+            selected_known, blocked_ids = _select_known_candidates(
+                filtered_candidates,
+                introduced_families,
+                introduced_target_lemmas=introduced_target_lemmas,
+                granularity_policy=granularity_policy,
+                target_after=target_after,
+                current_simple_mass=cumulative_simple_mass,
+                seen_word_count_after=cumulative_word_count,
+            )
+            paragraph_families = set(introduced_families)
+            paragraph_target_lemmas = set(introduced_target_lemmas)
+            selected_candidates = list(selected_known)
+            for candidate in selected_known:
+                paragraph_families.update(candidate.family_ids)
+                paragraph_target_lemmas.update(_candidate_cost_target_lemmas(candidate))
+            simple_after_known = cumulative_simple_mass + _selected_simple_mass(selected_known)
+            visible_after_known = cumulative_visible_mass + _selected_visible_mass(selected_known)
+            introducing_candidates = [
+                candidate
+                for candidate in filtered_candidates
+                if candidate.candidate_id not in blocked_ids
+                and any(lemma not in introduced_target_lemmas for lemma in _candidate_cost_target_lemmas(candidate))
+            ]
+            selected_new, removed_known_ids = _select_introducing_candidates(
+                introducing_candidates,
+                selected_candidates=selected_candidates,
+                introduced_families=introduced_families,
+                introduced_target_lemmas=introduced_target_lemmas,
+                remaining_after=remaining_after,
+                remaining_target_after=remaining_target_after,
+                family_weight_lookup=family_weight_lookup,
+                target_after=target_after,
+                progress=progress,
+                idiomaticity_penalty_weight=idiomaticity_penalty_weight,
+                granularity_policy=granularity_policy,
+                current_simple_mass=simple_after_known,
+                current_visible_mass=visible_after_known,
+                seen_word_count_after=cumulative_word_count,
+            )
+            if removed_known_ids:
+                selected_candidates = [c for c in selected_candidates if c.candidate_id not in removed_known_ids]
+            selected_candidates.extend(selected_new)
+
+        current_actual = _future_czechness(remaining_after, introduced_families, family_weight_lookup=family_weight_lookup)
         for candidate in selected_candidates:
             introduced_families.update(candidate.family_ids)
             introduced_target_lemmas.update(_candidate_cost_target_lemmas(candidate))
