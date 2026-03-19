@@ -3,14 +3,22 @@
 Two distinct measures
 ---------------------
 alignment_quality_score  — how reliable is the alignment?
-    Composite of structural signals (UPOS, deprel, dependency-tree match,
-    token-support ratio) and semantic confidence (embedding, candidate score).
-    Used in phase-2 to rank and gate candidates.
+
+    For TOKEN candidates the dictionary is the *primary* signal:
+        dict_hit  → CS lemma confirmed by CS→PL lookup (ground truth)
+        form      → char-trigram Jaccard (cognate / near-identical Slavic forms)
+        upos      → part-of-speech match (structural sanity check)
+        deprel    → syntactic-role match
+        embedding → fallback when dict and form are both weak
+
+    For PHRASE / SUBTREE / SENTENCE / PARAGRAPH candidates the tree-matching
+    quality dominates (individual lemmas are less informative for multi-word spans):
+        structural = token_support + lemma_overlap + upos + deprel
+        semantic   = embedding + candidate.score
 
 linguistic_similarity_score  — is the Czech word the right translation of the Polish word?
-    Composite of dictionary validation (CS→PL Wiktionary lookup) and
-    surface form similarity (char-trigram Jaccard).
-    Used in phase-3 as a tiebreaker.
+    Composite of dictionary validation (CS→PL lookup) and char-trigram Jaccard.
+    Used in phase-3 as a tiebreaker when alignment_quality scores are tied.
 """
 from __future__ import annotations
 
@@ -68,14 +76,59 @@ def _lemma_signal(sig: dict[str, float]) -> float:
 # alignment_quality_score
 # ---------------------------------------------------------------------------
 
-def alignment_quality_score(candidate: ParagraphHybridCandidate) -> float:
+def _cs_lemmas_from_family_ids(candidate: ParagraphHybridCandidate) -> list[str]:
+    """CS (target) lemmas extracted directly from family_ids right-side of '::'."""
+    lemmas: list[str] = []
+    for fid in _cost_family_ids(candidate):
+        if "::" not in fid:
+            continue
+        cs_side = fid.split("::", 1)[1]
+        for part in cs_side.split("+"):
+            part = part.strip().lower()
+            if part and part not in lemmas:
+                lemmas.append(part)
+    return lemmas
+
+
+def _token_dict_hit(
+    candidate: ParagraphHybridCandidate,
+    wiktionary_lookup: dict[str, list[str]] | None,
+) -> float:
+    """Dictionary validation score for a token candidate.
+
+    Looks up each CS lemma (right side of '::' in family_ids) → expected PL
+    lemmas, checks fraction of source (PL) lemmas confirmed.
+    Returns 0.0 when no dictionary entry exists — absence ≠ wrong alignment.
+    """
+    if not wiktionary_lookup:
+        return 0.0
+    pl_lemmas = _source_lemmas_of_candidate(candidate)
+    cs_lemmas = _cs_lemmas_from_family_ids(candidate)
+    if not pl_lemmas or not cs_lemmas:
+        return 0.0
+    hits: list[float] = []
+    for cs in cs_lemmas:
+        translations = wiktionary_lookup.get(cs)
+        if translations:
+            hit = len(pl_lemmas & set(translations)) / len(pl_lemmas)
+            hits.append(hit)
+    return sum(hits) / len(hits) if hits else 0.0
+
+
+def alignment_quality_score(
+    candidate: ParagraphHybridCandidate,
+    wiktionary_lookup: dict[str, list[str]] | None = None,
+) -> float:
     """Returns [0, 1] — how reliable is this alignment?
 
-    Token candidates: dominated by the enrichment score (already a composite
-    of char, embedding and UPOS signals); UPOS and deprel add sanity check.
+    TOKEN candidates — dictionary is the primary signal:
+        If dict_hit > 0 (CS lemma found in dictionary and PL lemma confirmed):
+            0.55 * dict_hit + 0.25 * form + 0.15 * upos + 0.05 * deprel
+        If no dictionary entry (might be a valid cognate or proper noun):
+            0.40 * embedding + 0.35 * form + 0.20 * upos + 0.05 * deprel
 
-    Phrase / subtree / sentence / paragraph candidates: balance between the
-    structural tree-matching quality and semantic (embedding) confidence.
+    Non-token candidates — structural tree matching + semantic confidence:
+        0.50 * structural(token_support + lemma + upos + deprel) + 0.50 * embedding
     """
     sig = _signals(candidate)
     base = max(0.0, min(1.0, float(candidate.score)))
@@ -87,7 +140,14 @@ def alignment_quality_score(candidate: ParagraphHybridCandidate) -> float:
                           1.0 if candidate.granularity == "token" else 0.0))
 
     if candidate.granularity == "token":
-        return min(1.0, 0.65 * embedding + 0.20 * upos + 0.15 * deprel)
+        form = char_trigram_jaccard(candidate.source_text, candidate.target_text)
+        dict_hit = _token_dict_hit(candidate, wiktionary_lookup)
+        if dict_hit > 0.0:
+            # Dictionary confirms the translation — trust it heavily
+            return min(1.0, 0.55 * dict_hit + 0.25 * form + 0.15 * upos + 0.05 * deprel)
+        else:
+            # No dict entry: rely on form (cognates) + embedding + structure
+            return min(1.0, 0.40 * embedding + 0.35 * form + 0.20 * upos + 0.05 * deprel)
 
     # Non-token: structural tree match + semantic confidence
     structural = (0.40 * token_support

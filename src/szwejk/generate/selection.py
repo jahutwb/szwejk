@@ -192,9 +192,10 @@ def _select_candidates_three_phase(
         if _familiarity_ratio(c, local_fam, local_src) >= GRATIS_FAMILIARITY_THRESHOLD
         and _candidate_allowed_as_surface_carrier(c)
     ]
+    _aq = lambda c: alignment_quality_score(c, wiktionary_lookup)  # noqa: E731
     gratis_pool.sort(key=lambda c: (
         -float(_target_span_word_count(c)),
-        -alignment_quality_score(c),
+        -_aq(c),
         c.candidate_id,
     ))
     selected_gratis: list[ParagraphHybridCandidate] = []
@@ -216,11 +217,11 @@ def _select_candidates_three_phase(
         and _candidate_allowed_as_surface_carrier(c)
         and not _candidate_blocked_by_family_schedule(c, paragraph_families=local_fam)
     ]
-    remaining.sort(key=lambda c: (-alignment_quality_score(c), c.candidate_id))
+    remaining.sort(key=lambda c: (-_aq(c), c.candidate_id))
 
     pool: list[ParagraphHybridCandidate] = []
     for cand in remaining:
-        aq = alignment_quality_score(cand)
+        aq = _aq(cand)
         if aq < alignment_quality_threshold(cand.granularity):
             break  # list is sorted — tail is all below threshold
         keys = _target_token_keys(cand)
@@ -236,7 +237,7 @@ def _select_candidates_three_phase(
 
     # ── PHASE 3 ─────────────────────────────────────────────────────────────
     pool.sort(key=lambda c: (
-        -alignment_quality_score(c),
+        -_aq(c),
         -linguistic_similarity_score(c, wiktionary_lookup),
         c.candidate_id,
     ))
