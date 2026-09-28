@@ -9,7 +9,7 @@ description = "Alignment-first editorial pipeline for a Polish-Czech hybrid Szwe
 readme = "START_HERE.md"
 requires-python = ">=3.12"
 authors = [
-  { name = "Codex" }
+  { name = "Jan Borkowski" }
 ]
 dependencies = []
 
