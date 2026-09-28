@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "szwejk"
 version = "0.1.0"
 description = "Alignment-first editorial pipeline for a Polish-Czech hybrid Szwejk edition."
-readme = "START_HERE.md"
+readme = "README.md"
 requires-python = ">=3.12"
 authors = [
   { name = "Jan Borkowski" }
