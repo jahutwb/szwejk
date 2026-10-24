@@ -1,5 +1,7 @@
 # Szwejk
 
+> **Status: historyczny etap projektu Szwejk.** To wczesniejszy pipeline alignmentu i redakcji. Aktualny kierunek to silnik `hybrydyzer-next` (jeszcze nieopublikowany na tym GitHubie) i gotowy czytnik [Przeslowo](https://przeslowo.pl). Kod i dokumentacja ponizej dotycza tej starszej wersji.
+
 An alignment-first NLP and editorial pipeline for building a Polish-Czech hybrid edition of *The Good Soldier Svejk*.
 
 The project combines corpus ingestion and normalization, hierarchical text alignment, hybridization policy, review tooling, and deterministic generation. It is also used as a practical environment for structured AI-assisted software development with local coding agents.
